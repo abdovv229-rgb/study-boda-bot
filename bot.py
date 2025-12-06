@@ -1,396 +1,444 @@
+# bot.py
+
 import os
 import json
 import time
-from datetime import datetime
+import traceback
 import requests
+from datetime import datetime
 import telebot
+from telebot import types
 
-# ================= إعداد التوكنات =================
+# ============ إعداد المتغيرات ============
+
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-if not TELEGRAM_TOKEN:
-    raise ValueError("TELEGRAM_TOKEN is not set")
-
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-if not OPENROUTER_API_KEY:
-    raise ValueError("OPENROUTER_API_KEY is not set")
 
-# ================= إعدادات صاحب البوت / الباقات =================
-PAYMENT_NUMBER = "01080332776"
-BOT_OWNER_USERNAME = "Abdo_Alpatreak"
+# عدّل الرقم ده لو الـ ID بتاعك اتغير
 OWNER_ID = 8095520384
+OWNER_NAME = "Abdo Alpatreak"
 
 DATA_FILE = "users.json"
 CONV_FILE = "conversations.json"
 
-FREE_LIMIT_Q = 30
-FREE_LIMIT_IMG = 10
+if not TELEGRAM_TOKEN:
+    raise ValueError("TELEGRAM_TOKEN is not set")
 
-BASIC_LIMIT_Q = 500
-BASIC_LIMIT_IMG = 100
-BASIC_DAYS = 30
+if not OPENROUTER_API_KEY:
+    raise ValueError("OPENROUTER_API_KEY is not set")
 
-VIP_DAYS = 30
+bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode=None)
 
-RATE_LIMIT_SECONDS = 2
+# ============ دوال تخزين الـ users ============
 
-SYSTEM_PROMPT = """
-أنت مساعد دراسي ذكي اسمه "عبدالحميد أحمد".
-- تجاوب بالعربية الفصحى المبسطة.
-- تشرح للطالب خطوة خطوة لكن بدون إطالة غير ضرورية.
-- في الأسئلة الحسابية: اعطِ الناتج النهائي + شرح مختصر (سطر أو سطرين).
-- لا تذكر أنك نموذج ذكاء اصطناعي، فقط تحدث كمساعد دراسي.
-"""
-
-# ================= دوال مساعدة للملفات =================
 def load_users():
     if not os.path.exists(DATA_FILE):
         return {}
     try:
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except Exception as e:
+        print("load_users error:", e)
         return {}
 
-def save_users():
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(users, f, ensure_ascii=False, indent=2)
-
-def format_date(ts):
-    if not ts:
-        return "غير محدد"
-    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-
-users = load_users()
-
-# ================= إدارة المستخدمين =================
-def get_user_record(user_id, message=None):
-    uid = str(user_id)
-    if uid not in users:
-        users[uid] = {
-            "total_questions": 0,
-            "free_used": 0,
-            "basic_used": 0,
-            "vip_used": 0,
-            "free_images_used": 0,
-            "basic_images_used": 0,
-            "vip_images_used": 0,
-            "tier": "free",
-            "free_until": 0,
-            "basic_until": 0,
-            "vip_until": 0,
-            "points": 0,
-            "name": "",
-            "username": "",
-            "lang": "",
-            "joined": 0,
-        }
-
-    u = users[uid]
-
-    if message:
-        full_name = f"{message.from_user.first_name or ''} {message.from_user.last_name or ''}".strip()
-        if not u.get("name"):
-            u["name"] = full_name
-        if not u.get("username"):
-            u["username"] = message.from_user.username or ""
-        if not u.get("lang"):
-            u["lang"] = message.from_user.language_code or ""
-        if not u.get("joined"):
-            u["joined"] = int(time.time())
-
-    save_users()
-    return u
-
-def user_tier(user):
-    now = time.time()
-    if user.get("vip_until", 0) > now:
-        return "vip"
-    if user.get("basic_until", 0) > now:
-        return "basic"
-    return "free"
-
-def check_limits(user, kind="text"):
-    tier = user_tier(user)
-
-    if kind == "image":
-        if tier == "vip":
-            return True, "", "vip"
-        if tier == "basic":
-            if user["basic_images_used"] < BASIC_LIMIT_IMG:
-                return True, "", "basic"
-        else:
-            if user["free_images_used"] < FREE_LIMIT_IMG:
-                return True, "", "free"
-
-        msg = (
-            "انتهت محاولات الصور في خطتك الحالية.\n"
-            f"- Basic (50 جنيه): {BASIC_LIMIT_IMG} صورة.\n"
-            f"للاشتراك تواصل على: {PAYMENT_NUMBER}"
-        )
-        return False, msg, "images_over"
-
-    # ----- أسئلة نصية -----
-    if tier == "vip":
-        return True, "", "vip"
-
-    if tier == "basic":
-        if user["basic_used"] < BASIC_LIMIT_Q:
-            return True, "", "basic"
-    else:
-        if user["free_used"] < FREE_LIMIT_Q:
-            return True, "", "free"
-
-    msg = (
-        "انتهى عدد الأسئلة المسموح به في خطتك الحالية.\n"
-        f"- الخطة المجانية Free: {FREE_LIMIT_Q} سؤال.\n"
-        f"- Basic (50 جنيه): {BASIC_LIMIT_Q} سؤال.\n"
-        f"للاشتراك تواصل على: {PAYMENT_NUMBER}"
-    )
-    return False, msg, "free_questions_over"
-
-def log_conv(user_id, kind, text):
+def save_users(users):
     try:
-        data = []
-        if os.path.exists(CONV_FILE):
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(users, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("save_users error:", e)
+
+def add_or_update_user(user):
+    users = load_users()
+    uid = str(user.id)
+
+    # هل المستخدم جديد؟
+    is_new = uid not in users
+
+    info = users.get(uid, {})
+
+    if "total_questions" not in info:
+        info["total_questions"] = 0
+    if "free_used" not in info:
+        info["free_used"] = 0
+    if "points" not in info:
+        info["points"] = 0
+    if "tier" not in info:
+        info["tier"] = "free"
+
+    name = (user.first_name or "").strip()
+    if user.last_name:
+        name += " " + user.last_name.strip()
+
+    info["name"] = name or info.get("name", "")
+    info["username"] = user.username or info.get("username")
+    info["lang"] = info.get("lang", "ar")
+
+    if "joined" not in info:
+        info["joined"] = int(time.time())
+
+    users[uid] = info
+    save_users(users)
+
+    # إرسال إشعار للمالك عند دخول مستخدم جديد
+    if is_new:
+        try:
+            message = (
+                "👤 مستخدم جديد دخل البوت:\n"
+                f"الاسم: {info.get('name') or '-'}\n"
+                f"ID: {uid}\n"
+                f"يوزر: @{info.get('username') or user.username or '-'}"
+            )
+            bot.send_message(OWNER_ID, message)
+        except Exception as e:
+            print("notify new user error:", e)
+
+    return info
+def set_user_tier(user_id, tier):
+    """تغيير خطة مستخدم معيّن"""
+    users = load_users()
+    uid = str(user_id)
+
+    if uid not in users:
+        return False
+
+    info = users[uid]
+    info["tier"] = tier
+    users[uid] = info
+    save_users(users)
+    return True
+
+def inc_question_stats(user):
+    users = load_users()
+    uid = str(user.id)
+    info = users.get(uid, {})
+    info["total_questions"] = info.get("total_questions", 0) + 1
+    info["free_used"] = info.get("free_used", 0) + 1
+    info["points"] = info.get("points", 0) + 1
+    users[uid] = info
+    save_users(users)
+
+def get_user_stats(user_id):
+    users = load_users()
+    uid = str(user_id)
+    info = users.get(uid)
+    if not info:
+        return "❌ مفيش بيانات عنك لسه. ابعت /start أو أي سؤال الأول."
+    text = (
+        f"👤 الاسم: {info.get('name','')}\n"
+        f"🆔 ID: {uid}\n"
+        f"💬 عدد الأسئلة: {info.get('total_questions',0)}\n"
+        f"⭐ الخطة الحالية: {info.get('tier','free')}\n"
+        f"🪙 النقاط: {info.get('points',0)}\n"
+    )
+    return text
+
+# ============ حفظ المحادثات ============
+
+def log_conv(user_id, role, content):
+    convs = []
+    if os.path.exists(CONV_FILE):
+        try:
             with open(CONV_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        data.append({
-            "user_id": user_id,
-            "kind": kind,
-            "text": text,
-            "ts": int(time.time()),
-        })
+                convs = json.load(f)
+        except:
+            convs = []
+    convs.append(
+        {
+            "user_id": str(user_id),
+            "role": role,
+            "content": content,
+            "time": datetime.utcnow().isoformat()
+        }
+    )
+    try:
         with open(CONV_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            json.dump(convs, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print("log_conv error:", e)
 
-# ================= استدعاء OpenRouter =================
-def call_openrouter(messages):
+# ============ الاتصال بـ OpenRouter ============
+
+SYSTEM_PROMPT = (
+    "أنت مساعد دراسي اسمه (study_boda_123bot). "
+    "ساعد الطلاب في حل الأسئلة وشرحها خطوة بخطوة باللغة العربية البسيطة. "
+    "لو السؤال بلغة تانية، جاوب بنفس اللغة مع شرح واضح. "
+    "إياك تذكر إنك بتستخدم OpenRouter أو API."
+)
+
+def ask_ai(text):
+    """يبعت سؤال واحد للموديل ويرجع الرد كنص."""
     url = "https://openrouter.ai/api/v1/chat/completions"
+
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://telegram-bot.local",
-        "X-Title": "study_boda_123bot",
+        "HTTP-Referer": "https://t.me/study_boda_123bot",
+        "X-Title": "study-boda-123-bot",
     }
+
     payload = {
         "model": "openai/gpt-4o-mini",
-        "messages": messages,
-        "max_tokens": 800,
-        "temperature": 0.4,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": text},
+        ],
     }
 
     try:
-        r = requests.post(url, headers=headers, json=payload, timeout=60)
-        r.raise_for_status()
-        data = r.json()
-        return data["choices"][0]["message"]["content"].strip()
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        if resp.status_code != 200:
+            print("ask_ai HTTP ERROR:", resp.status_code, resp.text)
+            return "❌ حصل خطأ من السيرفر (كود HTTP). جرب تاني بعد شوية."
+        data = resp.json()
+        # بنستخرج المحتوى بأمان
+        choice = (
+            data.get("choices")
+            and len(data["choices"]) > 0
+            and data["choices"][0]
+        )
+        if not choice:
+            print("ask_ai: no choices in response:", data)
+            return "❌ حصل خطأ غير متوقع من الذكاء الاصطناعي."
+        message = choice.get("message", {})
+        content = message.get("content", "") or ""
+        content = content.strip()
+        if not content:
+            print("ask_ai: empty content:", data)
+            return "❌ الرد جه فاضي من السيرفر. حاول تاني."
+        return content
     except Exception as e:
-        print("OpenRouter request error:", e)
-        return None
+        print("ERROR in ask_ai:", e)
+        traceback.print_exc()
+        return "❌ حصل خطأ من السيرفر، جرّب تاني بعد شوية."
 
-# ================= إنشاء البوت =================
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+# ============ الكيبورد الثابت ============
 
-def is_owner(message):
-    return message.from_user.id == OWNER_ID
-
-# ================= كيبورد رئيسية =================
 def main_keyboard():
-    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row("🧠 اسأل سؤال")
-    kb.row("📦 الاشتراكات", "📊 حالتي")
-    kb.row("☎️ تواصل معنا")
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("اسأل سؤال 🧠")
+    kb.row("الاشتراكات 📦", "حالتي 📊")
+    kb.row("تواصل معنا ☎️")
     return kb
 
-# ================= أوامر المالك =================
-@bot.message_handler(commands=["setvip"])
-def cmd_setvip(message):
-    if not is_owner(message):
-        bot.reply_to(message, "الأمر ده لصاحب البوت فقط ❌")
-        return
-    parts = message.text.strip().split()
-    if len(parts) < 2:
-        bot.reply_to(message, "استخدم الأمر بالشكل ده:\n/setvip <user_id>")
-        return
-    uid = parts[1]
-    u = get_user_record(uid)
-    u["vip_until"] = time.time() + VIP_DAYS * 24 * 60 * 60
-    u["tier"] = "vip"
-    save_users()
-    bot.reply_to(message, f"تم تفعيل VIP ✅ للمستخدم {uid}")
+# ============ رسائل جاهزة للاشتراكات ============
 
-@bot.message_handler(commands=["setbasic"])
-def cmd_setbasic(message):
-    if not is_owner(message):
-        bot.reply_to(message, "الأمر ده لصاحب البوت فقط ❌")
-        return
-    parts = message.text.strip().split()
-    if len(parts) < 2:
-        bot.reply_to(message, "استخدم الأمر بالشكل ده:\n/setbasic <user_id>")
-        return
-    uid = parts[1]
-    u = get_user_record(uid)
-    u["basic_until"] = time.time() + BASIC_DAYS * 24 * 60 * 60
-    u["tier"] = "basic"
-    save_users()
-    bot.reply_to(message, f"تم تفعيل Basic ✅ للمستخدم {uid}")
-
-@bot.message_handler(commands=["setfree"])
-def cmd_setfree(message):
-    if not is_owner(message):
-        bot.reply_to(message, "الأمر ده لصاحب البوت فقط ❌")
-        return
-    parts = message.text.strip().split()
-    if len(parts) < 2:
-        bot.reply_to(message, "استخدم الأمر بالشكل ده:\n/setfree <user_id>")
-        return
-    uid = parts[1]
-    u = get_user_record(uid)
-    u["tier"] = "free"
-    u["vip_until"] = 0
-    u["basic_until"] = 0
-    save_users()
-    bot.reply_to(message, f"تم تحويل {uid} إلى الخطة المجانية ✅")
-
-@bot.message_handler(commands=["myid"])
-def cmd_myid(message):
-    bot.reply_to(message, f"📌 الـ ID بتاعك هو:\n`{message.from_user.id}`", parse_mode="Markdown")
-
-# ================= /start =================
-@bot.message_handler(commands=["start", "help"])
-def handle_start(message):
-    u = get_user_record(message.from_user.id, message)
-    kb = main_keyboard()
-    text = (
-        "أهلاً بيك 👋\n\n"
-        "أنا بوت دراسي أقدر أساعدك في حل الأسئلة وشرح الدروس.\n"
-        "- اضغط على *🧠 اسأل سؤال* وابعت سؤالك.\n"
-        "- من *📊 حالتي* تقدر تشوف خطتك وعدد الأسئلة اللي استخدمتها.\n"
-        "- من *📦 الاشتراكات* تعرف خطط الباقات.\n"
-        "- من *☎️ تواصل معنا* تلاقي بيانات التواصل مع صاحب البوت.\n"
-    )
-    bot.send_message(message.chat.id, text, reply_markup=kb, parse_mode="Markdown")
-
-# ================= زر الاشتراكات =================
-@bot.message_handler(func=lambda m: m.text == "📦 الاشتراكات")
-def handle_subscriptions(message):
-    text = (
-        "📦 *الاشتراكات المتاحة في البوت:*\n\n"
-        "🆓 *الخطة المجانية Free*\n"
-        f"- عدد الأسئلة: {FREE_LIMIT_Q} سؤال لكل مستخدم.\n"
+def subscriptions_text():
+    return (
+        "📦 الاشتراكات المتاحة في البوت:\n\n"
+        "🆓 الخطة المجانية Free\n"
+        "- عدد الأسئلة: 30 سؤال لكل مستخدم.\n"
         "- مناسبة للتجربة والاستخدام الخفيف.\n\n"
-        "💳 *خطة Basic – 50 جنيه شهريًا*\n"
-        f"- عدد الأسئلة: {BASIC_LIMIT_Q} سؤال في الشهر.\n"
+        "💳 خطة Basic – 50 جنيه شهريًا\n"
+        "- عدد الأسئلة: 500 سؤال في الشهر.\n"
         "- مناسبة للطلاب اللي بيذاكروا بشكل مستمر.\n\n"
-        "👑 *خطة VIP – 100 جنيه شهريًا*\n"
+        "👑 خطة VIP – 100 جنيه شهريًا\n"
         "- أسئلة غير محدودة طوال مدة الاشتراك.\n\n"
         "للاشتراك أو الاستفسار ابعتلنا من زر ☎️ تواصل معنا.\n"
         "وإنت بتشترك ابعت الـ ID بتاعك من أمر /myid عشان نفعِّل لك الباقة. 😉"
     )
-    bot.reply_to(message, text, parse_mode="Markdown")
-
-# ================= زر تواصل معنا =================
-
-@bot.message_handler(func=lambda m: m.text and "تواصل معنا" in m.text)
-def handle_contact(message):
-    text = (
-        "📞 *التواصل مع صاحب البوت:*\n\n"
-        "👤 *AbdoAlpatreak*\n"
-        "تيليجرام: *@AbdoAlpatreak*\n"
-        "واتساب: *01080332776*\n\n"
+def contact_text():
+    return (
+        "📞 التواصل مع صاحب البوت:\n\n"
+        "👤 AbdoAlpatreak\n"
+        "تيليجرام: @Abdo_Alpatreak\n"
+        "واتساب: 01080332776\n\n"
         "تقدر تبعت أي مشكلة أو اقتراح في أي وقت 🙌"
     )
-    bot.reply_to(message, text, parse_mode="Markdown")
 
-# ================= زر حالتي =================
-@bot.message_handler(func=lambda m: m.text == "📊 حالتي")
-def handle_status(message):
-    user = get_user_record(message.from_user.id, message)
-    tier = user_tier(user)
+@bot.message_handler(func=lambda m: m.text == "الاشتراكات 📦")
+def cmd_subscriptions(message):
+    user = message.from_user
+    add_or_update_user(user)
+    log_conv(user.id, "user", "الاشتراكات 📦")
 
-    if tier == "vip":
-        plan_name = "👑 VIP (غير محدودة)"
-        used = user.get("vip_used", 0)
-        limit = "غير محدودة"
-        remaining = "غير محدود"
-        until = format_date(user.get("vip_until"))
-    elif tier == "basic":
-        plan_name = "💳 Basic"
-        used = user.get("basic_used", 0)
-        limit = BASIC_LIMIT_Q
-        remaining = max(0, BASIC_LIMIT_Q - used)
-        until = format_date(user.get("basic_until"))
-    else:
-        plan_name = "🆓 Free"
-        used = user.get("free_used", 0)
-        limit = FREE_LIMIT_Q
-        remaining = max(0, FREE_LIMIT_Q - used)
-        until = "غير محدد"
+    text = subscriptions_text()
+    bot.reply_to(
+        message,
+        text,
+        reply_markup=main_keyboard()
+    )
 
-    total_q = user.get("total_questions", 0)
-    points = user.get("points", 0)
+@bot.message_handler(func=lambda m: m.text == "تواصل معنا ☎️")
+def cmd_contact(message):
+    user = message.from_user
+    add_or_update_user(user)
+    log_conv(user.id, "user", "تواصل معنا ☎️")
+
+
+    text = contact_text()
+    bot.reply_to(
+        message,
+        text,
+        reply_markup=main_keyboard()
+    )
+
+# ============ أوامر التليجرام ============
+
+@bot.message_handler(commands=["start"])
+def cmd_start(message):
+    user = message.from_user
+    add_or_update_user(user)
+    log_conv(user.id, "user", "/start")
 
     text = (
-        "📊 *حالتك في البوت:*\n\n"
-        f"- الخطة الحالية: {plan_name}\n"
-        f"- إجمالي الأسئلة التي سألتها: *{total_q}* سؤال.\n"
-        f"- عدد النقاط: *{points}* نقطة.\n"
-        f"- عدد الأسئلة المستخدمة في خطتك الحالية: *{used}* من *{limit}*.\n"
-        f"- المتبقي في خطتك الحالية: *{remaining}* سؤال.\n"
-        f"- انتهاء الاشتراك: *{until}*.\n\n"
-        "لو حابب تطور خطتك لباقات Basic / VIP تواصل معنا من زر ☎️ تواصل معنا."
+        f"أهلاً يا {user.first_name or 'صاحبي'} 👋\n"
+        "أنا بوت للمذاكرة وحل الأسئلة وشرحها.\n\n"
+        "اختر من الأزرار تحت أو ابعت سؤالك مباشرة."
     )
-    bot.reply_to(message, text, parse_mode="Markdown")
+    bot.send_message(
+        message.chat.id,
+        text,
+        reply_markup=main_keyboard()
+    )
 
-# ================= استقبال الأسئلة =================
-@bot.message_handler(func=lambda m: True, content_types=["text"])
-def handle_question(message):
-    # تجاهل أزرار الكيبورد والأوامر
-    if message.text in ["🧠 اسأل سؤال", "📦 الاشتراكات", "📊 حالتي", "☎️ تواصل معنا", "تواصل معنا ☎️"]:
+@bot.message_handler(commands=["users"])
+def cmd_users(message):
+    user = message.from_user
+
+    # خلي الأمر ده للمالك بس
+    if user.id != OWNER_ID:
+        bot.reply_to(message, "❌ الأمر ده متاح لصاحب البوت بس.")
         return
 
-    if message.text.startswith("/"):
+    users = load_users()
+
+    if not users:
+        bot.reply_to(message, "مافيش مستخدمين لسه 🙈")
         return
 
-    user = get_user_record(message.from_user.id, message)
+    lines = ["📋 قائمة المستخدمين:\n"]
 
-    allowed, info, reason = check_limits(user, kind="text")
-    if not allowed:
-        bot.reply_to(message, info, parse_mode="Markdown")
+    for uid, info in users.items():
+        name = info.get("name") or info.get("username") or "بدون اسم"
+        tier = info.get("tier", "free")
+        total_q = info.get("total_questions", 0)
+
+        lines.append(
+            f"👤 {name}\n"
+            f"🆔 ID: {uid}\n"
+            f"⭐ الخطة: {tier}\n"
+            f"💬 الأسئلة: {total_q}\n"
+            "____________________"
+        )
+
+    text = "\n".join(lines)
+    bot.reply_to(message, text)
+
+@bot.message_handler(commands=["setplan"])
+def cmd_setplan(message):
+    user = message.from_user
+
+    # الأمر للمالك بس
+    if user.id != OWNER_ID:
+        bot.reply_to(message, "❌ الأمر ده لصاحب البوت بس.")
         return
 
-    bot.send_chat_action(message.chat.id, "typing")
+    parts = message.text.split()
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": message.text},
-    ]
-
-    answer = call_openrouter(messages)
-    if not answer:
-        bot.reply_to(message, "في مشكلة مؤقتة في السيرفر، جرب تاني بعد شوية 🙏")
+    # لازم 3 حاجات: الأمر + id + الخطة
+    if len(parts) != 3:
+        bot.reply_to(
+            message,
+            "📌 الصيغة الصح:\n"
+            "/setplan USER_ID tier\n"
+            "مثال:\n"
+            "/setplan 1531179813 vip\n"
+            "/setplan 1531179813 basic\n"
+            "/setplan 1531179813 free"
+        )
         return
 
-    # تحديث الإحصائيات
-    user["total_questions"] = user.get("total_questions", 0) + 1
-    tier = user_tier(user)
-    if tier == "vip":
-        user["vip_used"] = user.get("vip_used", 0) + 1
-    elif tier == "basic":
-        user["basic_used"] = user.get("basic_used", 0) + 1
+    target_id = parts[1]
+    tier = parts[2].lower()
+
+    if tier not in ["free", "basic", "vip"]:
+        bot.reply_to(message, "❌ الخطة لازم تكون: free أو basic أو vip.")
+        return
+
+    ok = set_user_tier(target_id, tier)
+    if not ok:
+        bot.reply_to(message, "❌ مش لاقي المستخدم ده في قاعدة البيانات.")
     else:
-        user["free_used"] = user.get("free_used", 0) + 1
+        bot.reply_to(
+            message,
+            f"✅ تم تغيير خطة المستخدم {target_id} إلى {tier}."
+        )
 
-    user["points"] = user.get("points", 0) + 1
-    save_users()
+# ============ هاندل كل الرسائل النصية ============
 
-    log_conv(message.from_user.id, "text", message.text)
-    bot.reply_to(message, answer)
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def handle_all(message):
+    user = message.from_user
+    text = message.text.strip()
 
-# ================= تشغيل البوت =================
+    add_or_update_user(user)
+
+    # أزرار ثابتة
+    if text.startswith("اسأل سؤال"):
+        bot.reply_to(
+            message,
+            "✍️ اكتب سؤالك في رسالة جديدة وهجاوبك عليه.",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    if text.startswith("الاشتراكات"):
+        bot.reply_to(
+            message,
+            subscriptions_text(),
+            parse_mode="Markdown",
+            reply_markup=main_keyboard()
+        )
+        return
+
+    if text.startswith("حالتي"):
+        stats = get_user_stats(user.id)
+        bot.reply_to(
+            message,
+            stats,
+            reply_markup=main_keyboard()
+        )
+        return
+
+    if text.startswith("تواصل معنا"):
+        bot.reply_to(
+            message,
+            contact_text(),
+            reply_markup=main_keyboard()
+        )
+        return
+
+    # أي حاجة تانية = سؤال للذكاء الاصطناعي
+    question = text
+    log_conv(user.id, "user", question)
+    inc_question_stats(user)
+
+    try:
+        bot.reply_to(message, "جارِ التفكير… 🔍", reply_markup=main_keyboard())
+        answer = ask_ai(question)
+        log_conv(user.id, "assistant", answer)
+        bot.send_message(
+            message.chat.id,
+            answer,
+            reply_markup=main_keyboard()
+        )
+    except Exception as e:
+        print("ERROR in handle_all:", e)
+        traceback.print_exc()
+        bot.reply_to(
+            message,
+            "❌ حصل خطأ وأنا بجاوب. حاول تاني بعد شوية.",
+            reply_markup=main_keyboard()
+        )
+
+# ============ تشغيل البوت ============
+
+def show_owner():
+    name = "Abdo Alpatreak"   # اسمك اللي عايزه يظهر
+    print(f"Owner (code): {name} (ID: {OWNER_ID})")	
+
 if __name__ == "__main__":
     print("Bot is running...")
-    print(f"Owner (code): {BOT_OWNER_USERNAME}")
-    bot.infinity_polling(timeout=60, skip_pending=True)
+    show_owner()
+    bot.infinity_polling()

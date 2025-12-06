@@ -1,1 +1,2 @@
-telebotrequestspython-dotenv^D
+pyTelegramBotAPI
+requests
